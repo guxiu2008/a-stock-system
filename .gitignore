@@ -1,0 +1,53 @@
+# 数据库（太大，不能进 git）
+*.db
+*.db-journal
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# 环境变量
+.env
+.env.local
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+logs/
+
+# 临时
+*.tmp
+temp.json
+mindset.md.backup
+mindset.md.v1.backup
+mindset.md.v*.backup
+
+# opencode/agent runtime
+.opencode/cache/
+
+# local generated outputs
+*_fast.json
+a_stock_news_cache.json
+
+# 每日选股报告存档（不提交）
+archive/
