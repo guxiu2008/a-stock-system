@@ -25,7 +25,7 @@ OPTIMAL_PARAMS = {
 SWING_PARAMS = {
     "mode": "swing",
     "industry_rank_range": (3, 15),
-    "min_buy_score": 3,
+    "min_buy_score": 4,
     "min_roe": 1.0,
     "require_dividend": True,
     "mid_pct_lo": 0.25,
@@ -36,7 +36,7 @@ SWING_PARAMS = {
 GROWTH_PARAMS = {
     "mode": "growth",
     "industry_rank_range": (1, 20),
-    "min_buy_score": 1,
+    "min_buy_score": 4,
     "min_roe": 10.0,
     "require_dividend": False,
     "mid_pct_lo": 0.1,
@@ -289,9 +289,25 @@ class StockSelector:
         rank_metric = metric if metric in sub.columns else "cum_3d_pct"
         sub["pct_rank"] = sub.groupby("industry")[rank_metric].rank(pct=True)
         sub = sub[(sub["pct_rank"] >= self.mid_pct_lo) & (sub["pct_rank"] <= self.mid_pct_hi)]
+        
+        # 提高技术面门槛：MA20是趋势核心指标，跌破MA20直接排除
+        trend_mode = self.mode in ["swing", "growth"]
+        if trend_mode and "s_ma20" in sub.columns:
+            original_count = len(sub)
+            sub = sub[sub["s_ma20"] == 1]
+            if original_count > len(sub):
+                result["notes"].append(f"过滤掉 {original_count - len(sub)} 只跌破MA20的股票（中期趋势走弱）")
+        
+        # MACD翻绿也要扣分排除
+        if trend_mode and "s_macd" in sub.columns:
+            original_count = len(sub)
+            sub = sub[sub["s_macd"] == 1]
+            if original_count > len(sub):
+                result["notes"].append(f"过滤掉 {original_count - len(sub)} 只MACD翻绿的股票（动能减弱）")
+        
         sub = sub[sub["buy_score"] >= self.min_buy_score]
         if sub.empty:
-            result["notes"].append("无个股技术面信号足够强（打分 >= {}）".format(self.min_buy_score))
+            result["notes"].append(f"无个股技术面信号足够强（打分 >= {self.min_buy_score}）")
             return result
         sub = sub.sort_values(["buy_score", rank_metric], ascending=[False, False])
         max_picks = result["position_rule"]["max_picks"]
@@ -306,24 +322,38 @@ class StockSelector:
         close = float(row["close"])
         ma20 = float(row["ma20"]) if pd.notna(row["ma20"]) else close
         ma60 = float(row["ma60"]) if pd.notna(row.get("ma60")) else close
+        boll_lower = float(row["boll_lower"]) if pd.notna(row.get("boll_lower")) else None
+        
         if self.mode == "short":
-            stop_loss = min(close * 0.93, max(ma20, close * 0.95))
-            target = close * 1.08
-            second_target = close * 1.15
+            low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
+            stop_loss = round(max(ma20 * 0.97, close * 0.93), 2)
+            # 如果止损位高于60日最低点，推到最低点以下（避免被洗出去）
+            if low_60d > 0 and stop_loss > low_60d * 0.98:
+                stop_loss = round(low_60d * 0.97, 2)
+            target = round(close * 1.08, 2)
+            second_target = round(close * 1.15, 2)
             hold_period = "2~4 周（短线）"
-            buy_range = [round(close * 0.97, 2), round(close * 1.00, 2)]
+            buy_range = [round(max(ma20, close * 0.97, low_60d * 1.02), 2), round(close, 2)]
         elif self.mode == "growth":
-            stop_loss = min(close * 0.85, max(ma60, close * 0.92))
-            target = close * 1.25
-            second_target = close * 1.40
+            low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
+            stop_loss = round(max(ma60 * 0.95, close * 0.85, low_60d * 0.95), 2)
+            target = round(close * 1.25, 2)
+            second_target = round(close * 1.40, 2)
             hold_period = "3~6 个月（中期成长）"
-            buy_range = [round(close * 0.92, 2), round(close * 1.00, 2)]
+            buy_range = [round(max(ma60, close * 0.92, low_60d * 1.02), 2), round(close, 2)]
         else:
-            stop_loss = min(close * 0.90, max(ma60, close * 0.95))
-            target = close * 1.15
-            second_target = close * 1.25
+            # 中期波段：止损基于MA20、布林下轨、60日低点
+            low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
+            if boll_lower is not None and boll_lower > 0:
+                stop_loss = round(max(ma20 * 0.97, boll_lower * 0.98, low_60d * 0.97), 2)
+                buy_low = round(max(ma20 * 0.98, boll_lower, low_60d * 1.02), 2)
+            else:
+                stop_loss = round(max(ma20 * 0.97, close * 0.90, low_60d * 0.97), 2)
+                buy_low = round(max(ma20 * 0.98, close * 0.95, low_60d * 1.02), 2)
+            target = round(close * 1.15, 2)
+            second_target = round(close * 1.25, 2)
             hold_period = "1~3 个月（中期波段）"
-            buy_range = [round(close * 0.95, 2), round(close * 1.00, 2)]
+            buy_range = [buy_low, round(close, 2)]
         return {
             "rank": rank,
             "actionable": rank <= max_picks,
@@ -350,4 +380,24 @@ class StockSelector:
             "second_target_price": round(second_target, 2),
             "risk_reward_ratio": round((target - close) / (close - stop_loss), 2) if close > stop_loss else None,
             "hold_period": hold_period,
+            "suggested_position": self._suggest_position(close, stop_loss, target),
         }
+
+    def _suggest_position(self, close: float, stop_loss: float, target: float) -> dict:
+        rr = round((target - close) / (close - stop_loss), 2) if close > stop_loss else 0
+        if rr >= 3.0:
+            pct = 20
+            note = "高盈亏比，可给足仓位"
+        elif rr >= 2.0:
+            pct = 15
+            note = "盈亏比优秀，标准仓位"
+        elif rr >= 1.5:
+            pct = 10
+            note = "盈亏比合理，适中仓位"
+        elif rr >= 1.0:
+            pct = 5
+            note = "盈亏比偏低，轻仓试探"
+        else:
+            pct = 3
+            note = "盈亏比不佳，迷你仓位或观望"
+        return {"pct": pct, "note": note}

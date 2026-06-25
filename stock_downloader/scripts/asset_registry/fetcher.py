@@ -149,42 +149,292 @@ class DataFetcher:
     
     def fetch_concept_classify(self) -> pd.DataFrame:
         """
-        获取概念分类（使用concept接口）
+        获取概念分类。
+        
+        不再调用 Tushare Pro 已不可用的 concept/concept_detail 接口。
+        批量更新优先使用 DC 东方财富板块接口；THS 同花顺 ths_member
+        接口需要按板块逐个查询且频率限制很低，不再作为批量更新来源，
+        避免在 update-all 时产生大量无效调用并触发频率超限。
         
         Returns:
-            概念分类DataFrame
+            概念分类DataFrame。
         """
         print("正在获取概念分类...")
         
-        # 先获取概念列表
-        time.sleep(1)  # API调用间隔1秒
-        df_concepts = self.pro.concept()
+        df_boards = self._fetch_dc_concept_classify()
+        if not df_boards.empty:
+            return df_boards
         
-        if df_concepts.empty:
-            print("未获取到概念列表")
+        return self._fetch_ths_concept_classify()
+    
+    def _fetch_ths_concept_classify(self) -> pd.DataFrame:
+        """
+        使用 Tushare Pro 同花顺概念板块接口获取概念分类。
+        
+        ths_index 只能获取板块列表，不能直接得到股票-概念映射；
+        ths_member 需要按每个板块逐次调用，且普通权限频率限制很低。
+        因此批量更新时跳过 ths_member，避免大量调用和频率超限。
+        
+        Returns:
+            概念分类DataFrame。
+        """
+        print("跳过 THS 同花顺概念板块成分股批量获取：ths_member 需按板块逐个调用且频率限制较低")
+        return pd.DataFrame()
+    
+    def _fetch_dc_concept_classify(self) -> pd.DataFrame:
+        """
+        使用 Tushare Pro 东方财富板块接口获取概念分类。
+        
+        Returns:
+            概念分类DataFrame。
+        """
+        print("正在使用 DC 东方财富板块接口获取概念分类...")
+        
+        try:
+            time.sleep(1)
+            df_concepts = self.pro.query(
+                'dc_index',
+                fields='ts_code,name'
+            )
+        except Exception as e:
+            print(f"DC 东方财富板块列表获取失败: {e}")
             return pd.DataFrame()
         
+        return self._fetch_board_members(
+            df_concepts=df_concepts,
+            list_api_name='DC 东方财富板块',
+            member_api_name='dc_member',
+            member_fields='ts_code,con_code,name'
+        )
+    
+    def _fetch_board_members(
+        self,
+        df_concepts: pd.DataFrame,
+        list_api_name: str,
+        member_api_name: str,
+        member_fields: str
+    ) -> pd.DataFrame:
+        """
+        根据板块列表获取板块成分股并标准化为概念分类格式。
+        
+        Args:
+            df_concepts: 板块列表DataFrame。
+            list_api_name: 板块列表接口显示名称。
+            member_api_name: 成分股接口名。
+            member_fields: 成分股接口字段。
+        
+        Returns:
+            概念分类DataFrame。
+        """
+        if df_concepts.empty:
+            print(f"{list_api_name}接口未获取到板块列表")
+            return pd.DataFrame()
+        
+        required_columns = {'ts_code', 'name'}
+        if not required_columns.issubset(df_concepts.columns):
+            print(f"{list_api_name}接口返回字段异常: {list(df_concepts.columns)}")
+            return pd.DataFrame()
+        
+        # 创建概念代码到名称的映射
+        concept_map = dict(zip(df_concepts['ts_code'], df_concepts['name']))
+        concept_codes = list(concept_map.keys())
+        
         all_data = []
+        hit_rate_limit = False
+        batch_size = 10  # 每批10个板块
+        total_count = len(concept_codes)
+        total_batches = (total_count + batch_size - 1) // batch_size
+        success_batches = 0
         
-        # 获取每个概念的成分股
-        for _, row in df_concepts.iterrows():
+        print(f"开始获取 {total_count} 个板块的成分股，分 {total_batches} 批...")
+        print("-" * 60)
+        
+        for batch_idx in range(total_batches):
+            start_idx = batch_idx * batch_size
+            end_idx = min((batch_idx + 1) * batch_size, total_count)
+            batch_codes = concept_codes[start_idx:end_idx]
+            ts_code_param = ','.join(batch_codes)
+            
+            # 显示进度
+            progress_pct = ((batch_idx + 1) / total_batches) * 100
+            print(f"\r{' ' * 60}\r", end="")
+            print(f"进度: [{batch_idx + 1}/{total_batches}] {progress_pct:.1f}% | 板块 {start_idx + 1}-{end_idx}", end="", flush=True)
+            
             try:
-                time.sleep(0.5)  # 每次API调用间隔1秒
-                df_cons = self.pro.concept_detail(id=row['code'])
-                if not df_cons.empty:
-                    df_cons['concept_code'] = row['code']
-                    df_cons['concept_name'] = row['name']
-                    df_cons['update_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    # 只保留需要的列
-                    df_cons = df_cons[['ts_code', 'concept_code', 'concept_name', 'update_time']]
-                    all_data.append(df_cons)
+                time.sleep(1)  # API调用间隔1秒，避免触发频率限制
+                df_cons = self.pro.query(
+                    member_api_name,
+                    ts_code=ts_code_param,
+                    fields=member_fields
+                )
             except Exception as e:
-                print(f"获取概念 {row['name']} 成分股失败: {e}")
+                error_msg = str(e)
+                print(f"\n第 {batch_idx + 1} 批获取失败: {error_msg}")
+                if self._is_tushare_rate_limit_error(error_msg):
+                    hit_rate_limit = True
+                    print(f"{member_api_name} 已触发频率限制，停止继续请求，避免产生大量失败调用")
+                    break
+                continue
+            
+            # 处理批量返回的数据
+            if not df_cons.empty:
+                df_standard = self._normalize_batch_board_members(df_cons, concept_map)
+                if not df_standard.empty:
+                    all_data.append(df_standard)
+                    success_batches += 1
         
-        if all_data:
-            df_result = pd.concat(all_data, ignore_index=True)
-            # 按 ts_code 和 concept_code 去重，保留最新的一条
-            df_result = df_result.drop_duplicates(subset=['ts_code', 'concept_code'], keep='last')
-            return df_result
+        # 清除进度条
+        print(f"\r{' ' * 60}\r", end="")
+        print("-" * 60)
         
-        return pd.DataFrame()
+        if hit_rate_limit:
+            print(f"{list_api_name}成分股同步因频率限制中断，为避免部分数据覆盖历史数据，本次不返回结果")
+            return pd.DataFrame()
+        
+        if not all_data:
+            print(f"{list_api_name}接口未获取到有效板块成分股")
+            print(f"统计: 成功 {success_batches}/{total_batches} 批")
+            return pd.DataFrame()
+        
+        print(f"统计: 成功 {success_batches}/{total_batches} 批")
+        
+        df_result = pd.concat(all_data, ignore_index=True)
+        df_result = df_result[df_result['ts_code'].notna() & (df_result['ts_code'] != '')]
+        df_result = df_result.drop_duplicates(subset=['ts_code', 'concept_code'], keep='last')
+        return df_result
+    
+    @staticmethod
+    def _is_tushare_rate_limit_error(error_msg: str) -> bool:
+        """
+        判断 Tushare 错误信息是否为接口频率限制。
+        
+        Args:
+            error_msg: 异常信息。
+        
+        Returns:
+            是否为频率限制错误。
+        """
+        rate_limit_keywords = ('频率超限', '每分钟', '每天', '访问接口')
+        return any(keyword in error_msg for keyword in rate_limit_keywords)
+    
+    def _normalize_batch_board_members(
+        self,
+        df_cons: pd.DataFrame,
+        concept_map: dict
+    ) -> pd.DataFrame:
+        """
+        标准化批量板块成分股接口返回结果。
+        
+        Args:
+            df_cons: 成分股DataFrame（包含多个板块的数据）。
+            concept_map: 概念代码到名称的映射字典。
+        
+        Returns:
+            标准化后的概念分类DataFrame。
+        """
+        if df_cons.empty:
+            return pd.DataFrame()
+        
+        df_cons = df_cons.copy()
+        
+        # 转换股票代码列
+        if 'con_code' in df_cons.columns:
+            df_cons['ts_code'] = df_cons['con_code']
+        elif 'code' in df_cons.columns:
+            df_cons['ts_code'] = df_cons['code']
+        elif 'ts_code' not in df_cons.columns:
+            print(f"批量成分股字段异常: {list(df_cons.columns)}")
+            return pd.DataFrame()
+        
+        # 添加概念代码和名称
+        result_data = []
+        for _, row in df_cons.iterrows():
+            concept_code = row.get('ts_code')  # 注意：这里的ts_code是板块代码
+            if concept_code and concept_code in concept_map:
+                concept_name = concept_map[concept_code]
+                # 构建单条记录
+                result_data.append({
+                    'ts_code': row['ts_code'] if 'con_code' not in df_cons.columns else row['con_code'],
+                    'concept_code': concept_code,
+                    'concept_name': concept_name,
+                    'update_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                })
+        
+        return pd.DataFrame(result_data) if result_data else pd.DataFrame()
+    
+    def _normalize_board_members(
+        self,
+        df_cons: pd.DataFrame,
+        concept_code: str,
+        concept_name: str
+    ) -> pd.DataFrame:
+        """
+        标准化新版板块成分股接口返回结果。
+        
+        Args:
+            df_cons: 成分股DataFrame。
+            concept_code: 板块代码。
+            concept_name: 板块名称。
+        
+        Returns:
+            标准化后的概念分类DataFrame。
+        """
+        if df_cons.empty:
+            return pd.DataFrame()
+        
+        df_cons = df_cons.copy()
+        if 'con_code' in df_cons.columns:
+            df_cons['ts_code'] = df_cons['con_code']
+        elif 'code' in df_cons.columns:
+            df_cons['ts_code'] = df_cons['code']
+        elif 'ts_code' not in df_cons.columns:
+            print(f"板块 {concept_name} 成分股字段异常: {list(df_cons.columns)}")
+            return pd.DataFrame()
+        
+        df_cons['concept_code'] = concept_code
+        df_cons['concept_name'] = concept_name
+        df_cons['update_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        return df_cons[['ts_code', 'concept_code', 'concept_name', 'update_time']]
+    
+    def _fetch_symbol_ts_code_map(self) -> dict:
+        """
+        获取股票 symbol 到 ts_code 的映射。
+        
+        Returns:
+            symbol 到 ts_code 的映射字典。
+        """
+        try:
+            time.sleep(1)  # API调用间隔1秒
+            df_stock = self.pro.stock_basic(
+                exchange='',
+                list_status='L',
+                fields='ts_code,symbol'
+            )
+        except Exception as e:
+            print(f"获取股票代码映射失败，将按代码规则推断交易所后缀: {e}")
+            return {}
+        
+        if df_stock.empty:
+            return {}
+        
+        df_stock['symbol'] = df_stock['symbol'].astype(str).str.zfill(6)
+        return dict(zip(df_stock['symbol'], df_stock['ts_code']))
+    
+    @staticmethod
+    def _infer_ts_code(code: str) -> Optional[str]:
+        """
+        根据股票代码推断 Tushare ts_code。
+        
+        Args:
+            code: 6位股票代码。
+        
+        Returns:
+            推断出的 ts_code，无法推断时返回 None。
+        """
+        if code.startswith('6'):
+            return f"{code}.SH"
+        if code.startswith(('0', '3')):
+            return f"{code}.SZ"
+        if code.startswith(('4', '8', '9')):
+            return f"{code}.BJ"
+        return None

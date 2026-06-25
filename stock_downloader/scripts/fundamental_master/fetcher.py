@@ -364,3 +364,72 @@ class FinancialDataFetcher:
             return pd.DataFrame()
         
         return pd.concat(all_data, ignore_index=True)
+
+    def fetch_mainbz(self, ts_code: str, period: str = None) -> pd.DataFrame:
+        """
+        获取主营业务构成（支持逗号分隔批量查询）
+
+        Args:
+            ts_code: 股票代码（单个或多个，逗号分隔）
+            period: 报告期 (如 20231231)
+
+        Returns:
+            主营业务构成DataFrame
+        """
+        time.sleep(REQUEST_DELAY)
+
+        params = {'ts_code': ts_code}
+        if period:
+            params['period'] = period
+
+        df = self.pro.fina_mainbz(**params)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        core_cols = ['ts_code', 'end_date', 'bz_item', 'bz_type', 'bz_sales', 'bz_profit', 'bz_cost']
+        available_cols = [col for col in core_cols if col in df.columns]
+        df = df[available_cols].copy()
+
+        df['update_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        return df
+
+    def fetch_mainbz_batch_generator(self, stock_list: List[str], period: str = None,
+                                     batch_size: int = 100):
+        """
+        批量获取主营业务构成 - 生成器版本（边获取边返回）
+
+        Args:
+            stock_list: 股票代码列表
+            period: 报告期 (如 20231231)
+            batch_size: 每批请求的股票数量，默认 100
+
+        Yields:
+            每批的主营业务构成DataFrame
+        """
+        start_time = time.time()
+
+        total_batches = (len(stock_list) + batch_size - 1) // batch_size
+        print(f"开始批量获取 {len(stock_list)} 只股票的主营业务构成，分 {total_batches} 批")
+
+        total_count = 0
+        for i in range(0, len(stock_list), batch_size):
+            batch = stock_list[i:i + batch_size]
+            batch_num = i // batch_size + 1
+
+            ts_codes_str = ','.join(batch)
+            print(f"  处理第 {batch_num}/{total_batches} 批: {batch[0]} ... {batch[-1]}")
+
+            try:
+                df = self.fetch_mainbz(ts_codes_str, period=period)
+                if not df.empty:
+                    total_count += len(df)
+                    elapsed = time.time() - start_time
+                    print(f"    成功获取 {df['ts_code'].nunique()} 只股票，{len(df)} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
+                    yield df
+            except Exception as e:
+                print(f"    批次失败: {e}")
+                continue
+
+        elapsed = time.time() - start_time
+        print(f"主营业务构成批量获取完成！总耗时: {elapsed:.1f} 秒，总计 {total_count} 条记录")

@@ -2,7 +2,7 @@
 
 ./venv/bin/python ./scripts/asset_registry/cli.py --update-all --db ./stock_data.db
 
-./venv/bin/python ./scripts/market_quota_syncer/cli.py --sync-all --db stock_data.db
+./venv/bin/python ./scripts/market_quota_syncer/cli.py --sync-all --db ./stock_data.db
 
 ./venv/bin/python ./scripts/money_flow_analyst/cli.py --update-all --db ./stock_data.db
 

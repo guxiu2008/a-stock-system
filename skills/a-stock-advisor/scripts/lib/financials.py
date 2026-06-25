@@ -134,12 +134,27 @@ class FinancialAnalyzer:
         net_margin = metrics.get("net_margin")
         is_investment_type = gross_margin is not None and net_margin is not None and net_margin > gross_margin
         
+        # 逻辑校验：净利率几乎等于毛利率通常是数据异常（缺少期间费用数据）
+        margin_data_suspicious = False
+        if gross_margin is not None and net_margin is not None and gross_margin > 0:
+            margin_diff = gross_margin - net_margin
+            if margin_diff < 5:  # 差值小于5%，数据可能异常
+                margin_data_suspicious = True
+                warnings.append(f"⚠️  毛利率({gross_margin:.2f}%)与净利率({net_margin:.2f}%)差值异常小，数据可能不完整，请谨慎参考")
+        
+        # ROE交叉校验：ROE极低但净利率极高 → 数据必定异常（如天齐锂业ROE 1.1%但净利率55%）
+        roe_margin_mismatch = False
+        if roe is not None and net_margin is not None and roe < 5 and net_margin > 30:
+            roe_margin_mismatch = True
+            margin_data_suspicious = True
+            warnings.append(f"⚠️  ROE({roe:.2f}%)与净利率({net_margin:.2f}%)严重不匹配，数据可能异常，请谨慎参考")
+        
         margin_explosion = False
-        if gross_margin is not None and net_margin is not None and gross_margin >= 60 and net_margin >= 50:
+        if not margin_data_suspicious and gross_margin is not None and net_margin is not None and gross_margin >= 60 and net_margin >= 50:
             margin_explosion = True
             score += 25
             notes.append(f"毛利率{gross_margin:.2f}% + 净利率{net_margin:.2f}%：超高盈利水平，业绩核爆级表现！")
-        elif gross_margin is not None and net_margin is not None and gross_margin >= 50 and net_margin >= 35:
+        elif not margin_data_suspicious and gross_margin is not None and net_margin is not None and gross_margin >= 50 and net_margin >= 35:
             margin_explosion = True
             score += 20
             notes.append(f"毛利率{gross_margin:.2f}% + 净利率{net_margin:.2f}%：极高盈利能力，行业龙头定价权")
@@ -148,12 +163,15 @@ class FinancialAnalyzer:
             score += 4
             notes.append(f"净利率 {net_margin:.2f}% > 毛利率 {gross_margin:.2f}%：投资收益主导（典型控股公司）")
         elif net_margin is not None and not margin_explosion:
-            if net_margin >= 20:
+            if margin_data_suspicious:
+                score += 2
+                notes.append(f"净利率 {net_margin:.2f}%（⚠️ 与毛利率差值过小，数据可能不完整，仅供参考）")
+            elif net_margin >= 20:
                 score += 14
-                notes.append(f"净利率 {net_margin:.2f}%：非常优秀，行业龙头定价权")
+                notes.append(f"净利率 {net_margin:.2f}%：非常优秀")
             elif net_margin >= 15:
                 score += 12
-                notes.append(f"净利率 {net_margin:.2f}%：优秀，盈利能力强")
+                notes.append(f"净利率 {net_margin:.2f}%：优秀")
             elif net_margin >= 10:
                 score += 9
                 notes.append(f"净利率 {net_margin:.2f}%：良好")
@@ -211,6 +229,14 @@ class FinancialAnalyzer:
             notes.append(f"有分红记录 {div_years} 次")
         else:
             warnings.append("缺少近期分红记录")
+        rev_structure = self._score_revenue_structure(ts_code)
+        if rev_structure:
+            struct_score = rev_structure.get("score", 0)
+            score += struct_score
+            if rev_structure.get("warning"):
+                warnings.append(rev_structure["warning"])
+            if rev_structure.get("note"):
+                notes.append(rev_structure["note"])
         score = max(0, min(100, int(round(score))))
         hard_reject = self._hard_reject(metrics)
         hard_pass = score >= 60 and not hard_reject
@@ -285,6 +311,73 @@ class FinancialAnalyzer:
         if ocf_np is not None and ocf_np < -0.5:
             return True
         return False
+
+    def _score_revenue_structure(self, ts_code: str) -> dict:
+        """评分收入结构质量（从 fact_revenue_segments 表查询）"""
+        try:
+            segments = pd.read_sql_query(
+                """
+                SELECT end_date, bz_item, bz_type, bz_sales, bz_profit
+                FROM fact_revenue_segments
+                WHERE ts_code = ?
+                ORDER BY end_date DESC, bz_sales DESC
+                """,
+                self.conn,
+                params=(ts_code,),
+            )
+        except Exception:
+            return {}
+
+        if segments.empty:
+            return {}
+
+        latest_end_date = segments.iloc[0]["end_date"]
+        segments = segments[segments["end_date"] == latest_end_date]
+
+        product_segments = segments[segments["bz_type"] == "P"]
+        if product_segments.empty:
+            return {}
+
+        total_sales = product_segments["bz_sales"].sum()
+        if total_sales <= 0:
+            return {}
+
+        product_segments = product_segments.copy()
+        product_segments["sales_pct"] = product_segments["bz_sales"] / total_sales * 100
+        product_segments["gross_margin"] = product_segments.apply(
+            lambda r: (r["bz_profit"] / r["bz_sales"] * 100) if r["bz_sales"] and r["bz_sales"] > 0 else None,
+            axis=1,
+        )
+        product_segments = product_segments.sort_values("bz_sales", ascending=False)
+
+        result = {"score": 0}
+        top1_pct = product_segments.iloc[0]["sales_pct"]
+        count = len(product_segments)
+
+        if count >= 4 and top1_pct <= 50:
+            result["score"] += 6
+            result["note"] = f"收入结构多元化（{count}条业务线，最大占比{top1_pct:.0f}%）：抗风险能力强"
+        elif count >= 3 and top1_pct <= 65:
+            result["score"] += 4
+            result["note"] = f"收入结构较均衡（{count}条业务线，最大占比{top1_pct:.0f}%）"
+        elif count >= 2 and top1_pct <= 80:
+            result["score"] += 2
+            result["note"] = f"收入结构基本合理（{count}条业务线，最大占比{top1_pct:.0f}%）"
+        elif top1_pct > 85:
+            result["score"] -= 2
+            result["warning"] = f"收入高度依赖单一业务（{product_segments.iloc[0]['bz_item']}占比{top1_pct:.0f}%）：集中度风险"
+
+        margins = [m for m in product_segments["gross_margin"] if m is not None]
+        if len(margins) >= 2:
+            margin_range = max(margins) - min(margins)
+            if margin_range > 40:
+                result["score"] -= 1
+                if result.get("warning"):
+                    result["warning"] += f"；各业务毛利率差异大（{min(margins):.0f}%-{max(margins):.0f}%）"
+                else:
+                    result["warning"] = f"各业务毛利率差异大（{min(margins):.0f}%-{max(margins):.0f}%）：可能存在低毛利拖累"
+
+        return result
 
     def _num(self, value):
         if value is None or pd.isna(value):

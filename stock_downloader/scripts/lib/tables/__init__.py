@@ -19,6 +19,7 @@ from .fact_index_daily import FactIndexDailyTable
 from .fact_dividend_history import FactDividendHistoryTable
 from .fact_money_flow import FactMoneyFlowTable
 from .fact_macro_narratives import FactMacroNarrativesTable
+from .fact_revenue_segments import FactRevenueSegmentsTable
 
 # 状态表
 from .stock_sync_status import StockSyncStatusTable
@@ -51,6 +52,7 @@ __all__ = [
     'FactDividendHistoryTable',
     'FactMoneyFlowTable',
     'FactMacroNarrativesTable',
+    'FactRevenueSegmentsTable',
     
     # 状态表
     'StockSyncStatusTable',

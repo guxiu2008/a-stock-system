@@ -10,6 +10,7 @@ from typing import Optional
 from scripts.lib import (
     DimStockInfoTable,
     FactFinancialReportsTable,
+    FactRevenueSegmentsTable,
     FundamentalMasterLogTable,
 )
 
@@ -21,6 +22,7 @@ class FundamentalDatabase:
         self.db_path = db_path
         self.dim_stock_info = DimStockInfoTable(db_path)
         self.fact_financial_reports = FactFinancialReportsTable(db_path)
+        self.fact_revenue_segments = FactRevenueSegmentsTable(db_path)
         self.fundamental_master_log = FundamentalMasterLogTable(db_path)
     
     # ==================== 股票基本信息 ====================
@@ -123,3 +125,18 @@ class FundamentalDatabase:
     def get_last_update_time(self, data_type: str) -> Optional[str]:
         """获取最后更新时间"""
         return self.fundamental_master_log.get_last_update_time(data_type)
+
+    # ==================== 主营业务构成 ====================
+
+    def save_revenue_segments(self, df: pd.DataFrame) -> int:
+        """保存主营业务构成数据"""
+        return self.fact_revenue_segments.save(df)
+
+    def get_revenue_segments(self, ts_code: str = None, end_date: str = None,
+                             bz_type: str = None) -> pd.DataFrame:
+        """查询主营业务构成"""
+        return self.fact_revenue_segments.get(ts_code, end_date, bz_type)
+
+    def get_existing_segments_by_period(self, period: str) -> set:
+        """获取指定报告期已有主营业务构成数据的股票代码集合"""
+        return self.fact_revenue_segments.get_existing_by_period(period)

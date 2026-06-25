@@ -75,7 +75,7 @@ class LiveCache:
         self.quotes = pd.read_sql_query("""
             SELECT q.ts_code, q.trade_date, q.open, q.high, q.low, q.close, q.pct_chg, q.vol,
                    mi.ma5, mi.ma10, mi.ma20, mi.ma60,
-                   mi.macd, mi.macd_hist, mi.kdj_j, mi.rsi6, mi.boll_upper
+                   mi.macd, mi.macd_hist, mi.kdj_j, mi.kdj_k, mi.kdj_d, mi.rsi6, mi.boll_upper, mi.boll_lower
             FROM fact_daily_quotes q
             LEFT JOIN market_indicators mi ON q.ts_code = mi.ts_code AND q.trade_date = mi.trade_date
             WHERE q.trade_date >= ? AND q.trade_date <= ?
@@ -110,8 +110,25 @@ class LiveCache:
 
         # 预计算买入信号
         self.quotes["s_ma20"] = (self.quotes["close"] > self.quotes["ma20"]).astype("int8")
-        self.quotes["s_macd"] = ((self.quotes["macd"] > 0) & (self.quotes["macd_hist"] > 0)).astype("int8")
-        self.quotes["s_kdj"] = ((self.quotes["kdj_j"] >= 20) & (self.quotes["kdj_j"] <= 80)).astype("int8")
+        # MACD: >0 + 柱状>0 + 柱状没有连续2天收缩超过30%（避免动能衰竭）
+        self.quotes["macd_hist_prev"] = grouped["macd_hist"].shift(1)
+        self.quotes["macd_hist_prev2"] = grouped["macd_hist"].shift(2)
+        self.quotes["s_macd"] = (
+            (self.quotes["macd"] > 0)
+            & (self.quotes["macd_hist"] > 0)
+            & ~(
+                (self.quotes["macd_hist_prev"] > 0)
+                & (self.quotes["macd_hist"] < self.quotes["macd_hist_prev"] * 0.7)
+                & (self.quotes["macd_hist_prev"] < self.quotes["macd_hist_prev2"] * 0.7)
+            )
+        ).astype("int8")
+        # KDJ: J在20~80之间 + K>D(多头排列) + J没有3天内从>80急跌到<60(避免高位死叉)
+        self.quotes["kdj_j_3d_ago"] = grouped["kdj_j"].shift(3)
+        self.quotes["s_kdj"] = (
+            (self.quotes["kdj_j"] >= 20) & (self.quotes["kdj_j"] <= 80)
+            & (self.quotes["kdj_k"] > self.quotes["kdj_d"])
+            & ~((self.quotes["kdj_j_3d_ago"] > 80) & (self.quotes["kdj_j"] < 60))
+        ).astype("int8")
         self.quotes["s_rsi"] = ((self.quotes["rsi6"] >= 30) & (self.quotes["rsi6"] <= 70)).astype("int8")
         self.quotes["s_boll"] = (self.quotes["close"] < self.quotes["boll_upper"]).astype("int8")
         self.quotes["buy_score"] = (

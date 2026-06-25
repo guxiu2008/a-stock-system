@@ -208,9 +208,9 @@ class DataFetcher:
         return min(5, max(1, score))
     
     def fetch_news(self, start_date: str, end_date: str, 
-                  limit: int = 100) -> pd.DataFrame:
+                   limit: int = 100) -> pd.DataFrame:
         """
-        获取新闻快讯
+        获取新闻快讯（news接口需要高级权限，已跳过）
         
         Args:
             start_date: 开始日期 (YYYYMMDD)
@@ -220,57 +220,8 @@ class DataFetcher:
         Returns:
             新闻DataFrame
         """
-        print(f"正在获取新闻快讯 ({start_date} ~ {end_date})...")
-        time.sleep(1)
-        
-        try:
-            df = self.pro.news(
-                start_date=start_date,
-                end_date=end_date,
-                limit=limit
-            )
-            
-            if df.empty:
-                print("未获取到新闻数据")
-                return pd.DataFrame()
-            
-            # 处理数据
-            results = []
-            for _, row in df.iterrows():
-                title = row.get('title', '')
-                content = row.get('content', '')
-                
-                # 过滤噪音
-                if self.is_noise_news(title, content):
-                    continue
-                
-                event_date = row.get('pub_time', '').split(' ')[0].replace('-', '')
-                if not event_date:
-                    event_date = start_date
-                
-                keywords = self.extract_keywords(title, content)
-                sectors = self.extract_sectors(title, content)
-                sentiment = self.analyze_sentiment(title, content)
-                importance = self.calculate_importance(title, content, 'Tushare新闻')
-                
-                results.append({
-                    'event_date': event_date,
-                    'source': 'Tushare新闻',
-                    'title': title,
-                    'keywords': keywords,
-                    'summary': content[:200] if content else None,
-                    'importance': importance,
-                    'sentiment': sentiment,
-                    'sectors': sectors,
-                })
-            
-            result_df = pd.DataFrame(results)
-            print(f"获取到 {len(result_df)} 条有效新闻（已过滤噪音）")
-            return result_df
-            
-        except Exception as e:
-            print(f"获取新闻数据失败: {e}")
-            return pd.DataFrame()
+        print("跳过新闻快讯获取：Tushare news接口需要单独购买")
+        return pd.DataFrame()
     
     def fetch_eco_cal(self, start_date: str, end_date: str) -> pd.DataFrame:
         """

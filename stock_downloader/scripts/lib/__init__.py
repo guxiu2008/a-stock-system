@@ -21,6 +21,7 @@ from .tables import (
     FactDividendHistoryTable,
     FactMoneyFlowTable,
     FactMacroNarrativesTable,
+    FactRevenueSegmentsTable,
     
     # 状态表
     StockSyncStatusTable,
@@ -56,6 +57,7 @@ __all__ = [
     'FactDividendHistoryTable',
     'FactMoneyFlowTable',
     'FactMacroNarrativesTable',
+    'FactRevenueSegmentsTable',
     
     # 状态表
     'StockSyncStatusTable',

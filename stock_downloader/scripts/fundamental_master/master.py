@@ -430,3 +430,191 @@ class FundamentalMaster:
             "warnings": warnings,
             "has_red_flags": len(red_flags) > 0
         }
+
+    # ==================== 主营业务构成 ====================
+
+    def update_revenue_segments(self, ts_code: str = None, period: str = None,
+                                batch_size: int = 100) -> int:
+        """
+        批量更新主营业务构成数据
+
+        Args:
+            ts_code: 股票代码（单只或逗号分隔多只）
+            period: 报告期 (如 20231231)
+            batch_size: 每批请求的股票数量
+
+        Returns:
+            更新的记录数
+        """
+        import time
+        self._ensure_fetcher()
+
+        if ts_code:
+            print(f"正在获取 {ts_code} 的主营业务构成...")
+            df = self.fetcher.fetch_mainbz(ts_code, period=period)
+            if df.empty:
+                return 0
+            count = self.db.save_revenue_segments(df)
+            print(f"主营业务构成更新完成，共 {count} 条记录")
+            return count
+
+        stock_list = self.fetcher.fetch_stock_list()
+        if not stock_list:
+            print("没有股票需要更新")
+            return 0
+
+        if period:
+            periods = [period]
+        else:
+            now = datetime.datetime.now()
+            periods = []
+            for i in range(4):
+                target_quarter = (now.month - 1) // 3 - i
+                year = now.year + target_quarter // 4
+                quarter = target_quarter % 4
+                if quarter < 0:
+                    quarter += 4
+                    year -= 1
+                month = (quarter + 1) * 3
+                end_day = 31 if month in [3, 12] else 30
+                period_date = datetime.datetime(year, month, end_day)
+                if period_date <= now:
+                    periods.append(f"{year}{month:02d}{end_day:02d}")
+            periods = list(set(periods))
+            periods.sort(reverse=True)
+
+        print("=" * 60)
+        print("开始批量更新主营业务构成")
+        print(f"股票数量: {len(stock_list)}, 报告期: {periods}")
+        print("=" * 60)
+
+        total_count = 0
+        start_time = time.time()
+
+        for p_idx, p in enumerate(periods, 1):
+            print(f"\n--- 处理报告期 [{p_idx}/{len(periods)}]: {p} ---")
+
+            existing_stocks = self.db.get_existing_segments_by_period(p)
+            print(f"  数据库中已有 {len(existing_stocks)} 只股票的 {p} 主营业务数据")
+
+            missing_stocks = [ts for ts in stock_list if ts not in existing_stocks]
+            print(f"  需要获取 {len(missing_stocks)} 只股票的数据")
+
+            if not missing_stocks:
+                print(f"  该报告期数据已完整，跳过API调用")
+                continue
+
+            for df in self.fetcher.fetch_mainbz_batch_generator(missing_stocks, period=p,
+                                                                  batch_size=batch_size):
+                if not df.empty:
+                    count = self.db.save_revenue_segments(df)
+                    total_count += count
+                    elapsed = time.time() - start_time
+                    print(f"  报告期 {p} 保存 {count} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
+
+        elapsed = time.time() - start_time
+        print("\n" + "=" * 60)
+        print(f"主营业务构成批量更新完成！总记录数: {total_count}, 总耗时: {elapsed:.2f} 秒")
+        print("=" * 60)
+
+        return total_count
+
+    def get_revenue_segments(self, ts_code: str, end_date: str = None,
+                             bz_type: str = None) -> pd.DataFrame:
+        """
+        查询主营业务构成
+
+        Args:
+            ts_code: 股票代码
+            end_date: 报告期 (如 20231231)
+            bz_type: 类型过滤 (P=产品, I=行业, R=地区)
+
+        Returns:
+            主营业务构成DataFrame
+        """
+        return self.db.get_revenue_segments(ts_code=ts_code, end_date=end_date, bz_type=bz_type)
+
+    def analyze_revenue_structure(self, ts_code: str) -> Dict[str, Any]:
+        """
+        分析收入结构质量 (Agent 接口)
+
+        评估维度：
+        - 收入集中度（第一大业务占比）
+        - 多元化程度（业务线数量）
+        - 各业务毛利率分布
+
+        Args:
+            ts_code: 股票代码
+
+        Returns:
+            收入结构分析结果
+        """
+        df = self.db.get_revenue_segments(ts_code=ts_code)
+        if df.empty:
+            return {
+                "ts_code": ts_code,
+                "status": "error",
+                "message": "无主营业务构成数据"
+            }
+
+        latest_date = df['end_date'].max()
+        latest_data = df[df['end_date'] == latest_date].copy()
+
+        result = {
+            "ts_code": ts_code,
+            "status": "success",
+            "end_date": latest_date,
+            "bz_types": {},
+        }
+
+        for bz_type in ['P', 'I', 'R']:
+            type_data = latest_data[latest_data['bz_type'] == bz_type]
+            if type_data.empty:
+                continue
+
+            total_sales = type_data['bz_sales'].sum()
+            if total_sales <= 0:
+                continue
+
+            type_data = type_data.copy()
+            type_data['sales_pct'] = type_data['bz_sales'] / total_sales * 100
+            type_data['gross_margin'] = type_data.apply(
+                lambda r: (r['bz_profit'] / r['bz_sales'] * 100) if r['bz_sales'] and r['bz_sales'] > 0 else None,
+                axis=1
+            )
+
+            items = []
+            for _, row in type_data.sort_values('bz_sales', ascending=False).iterrows():
+                item = {
+                    "item": row['bz_item'],
+                    "sales": round(row['bz_sales'] / 100000000, 2),
+                    "profit": round(row['bz_profit'] / 100000000, 2) if pd.notna(row.get('bz_profit')) else None,
+                    "sales_pct": round(row['sales_pct'], 1),
+                }
+                if row.get('gross_margin') is not None and pd.notna(row['gross_margin']):
+                    item["gross_margin"] = round(row['gross_margin'], 1)
+                items.append(item)
+
+            top1_pct = items[0]['sales_pct'] if items else 0
+            margins = [i['gross_margin'] for i in items if 'gross_margin' in i]
+
+            type_label = {"P": "产品", "I": "行业", "R": "地区"}.get(bz_type, bz_type)
+            result["bz_types"][type_label] = {
+                "items": items,
+                "count": len(items),
+                "top1_concentration": round(top1_pct, 1),
+                "avg_gross_margin": round(sum(margins) / len(margins), 1) if margins else None,
+                "margin_range": [round(min(margins), 1), round(max(margins), 1)] if margins else None,
+            }
+
+        summary_parts = []
+        for type_label, info in result["bz_types"].items():
+            summary_parts.append(f"{type_label}: {info['count']}条业务线, 最大占比{info['top1_concentration']}%")
+            if info['top1_concentration'] > 80:
+                summary_parts[-1] += " ⚠️ 高度集中"
+            if info.get('margin_range') and info['margin_range'][1] - info['margin_range'][0] > 40:
+                summary_parts[-1] += " ⚠️ 毛利率差异大"
+
+        result["summary"] = "; ".join(summary_parts) if summary_parts else "无有效数据"
+
+        return result

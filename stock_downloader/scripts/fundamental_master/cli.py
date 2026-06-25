@@ -34,6 +34,12 @@ def main():
     parser.add_argument('--find-moat', action='store_true', help='筛选护城河股票')
     parser.add_argument('--min-roe', type=float, default=15, help='最低ROE要求 (默认15)')
     parser.add_argument('--detect-flags', type=str, help='检测财务预警信号')
+
+    # 主营业务构成相关
+    parser.add_argument('--update-segments', action='store_true', help='更新主营业务构成数据')
+    parser.add_argument('--query-segments', type=str, help='查询主营业务构成')
+    parser.add_argument('--analyze-structure', type=str, help='分析收入结构质量')
+    parser.add_argument('--bz-type', type=str, help='主营业务类型过滤 (P/I/R)')
     
     args = parser.parse_args()
     
@@ -59,6 +65,15 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif args.detect_flags:
         result = master.detect_accounting_red_flags(args.detect_flags)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif args.update_segments:
+        master.update_revenue_segments(ts_code=args.ts_code, period=args.period)
+    elif args.query_segments:
+        df = master.get_revenue_segments(ts_code=args.query_segments, end_date=args.period,
+                                         bz_type=args.bz_type)
+        print(df)
+    elif args.analyze_structure:
+        result = master.analyze_revenue_structure(args.analyze_structure)
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         # 默认显示帮助
