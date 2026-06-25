@@ -30,8 +30,8 @@ permission:
 调用 a-stock-advisor 的脚本得到 6 维度打分：
 
 ```bash
-/workspace/stock_downloader/venv/bin/python \
-  /workspace/a-stock-system/skills/a-stock-advisor/scripts/evaluate_stock.py <代码> --json
+${PYTHON_BIN:-/workspace/stock_downloader/venv/bin/python} \
+  ${A_STOCK_SKILL_DIR:-/workspace/a-stock-system/skills/a-stock-advisor}/scripts/evaluate_stock.py <代码> --json
 ```
 
 ### 第 2 步：补充财务深度（可选，根据用户问题）
@@ -39,13 +39,13 @@ permission:
 
 ```bash
 # 历史 ROE 走势（过去 4 期）
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT end_date, roe, roe_waa, debt_to_assets, netprofit_margin
    FROM fact_financial_reports WHERE ts_code = 'XXX.SH'
    ORDER BY end_date DESC LIMIT 8"
 
 # 分红历史
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT end_date, cash_div_tax, div_proc
    FROM fact_dividend_history WHERE ts_code = 'XXX.SH'
    ORDER BY end_date DESC LIMIT 10"
@@ -55,7 +55,7 @@ sqlite3 /workspace/stock_downloader/stock_data.db \
 查最近 30 天宏观政策中是否提到该公司所在行业：
 
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT event_date, source, title, sectors
    FROM fact_macro_narratives
    WHERE event_date >= date('now', '-30 days')
@@ -67,7 +67,7 @@ sqlite3 /workspace/stock_downloader/stock_data.db \
 北向资金最近趋势：
 
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT trade_date, hsgt_net_amount, north_money
    FROM fact_money_flow
    WHERE trade_date >= date('now', '-10 days')

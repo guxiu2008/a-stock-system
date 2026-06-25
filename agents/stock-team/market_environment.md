@@ -27,7 +27,7 @@ permission:
 
 ### 第 1 步：大盘指数趋势
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db <<'SQL'
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} <<'SQL'
 SELECT i.ts_code,
        CASE i.ts_code WHEN '000001.SH' THEN '上证' WHEN '399001.SZ' THEN '深成'
             WHEN '399006.SZ' THEN '创业板' WHEN '000300.SH' THEN '沪深300' END as name,
@@ -46,7 +46,7 @@ SQL
 
 ### 第 2 步：板块轮动（近 3 日强弱对比）
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db <<'SQL'
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} <<'SQL'
 WITH d AS (SELECT DISTINCT trade_date FROM fact_daily_quotes ORDER BY trade_date DESC LIMIT 3)
 SELECT s.industry, ROUND(AVG(q.pct_chg),2) as avg_3d_pct,
        COUNT(DISTINCT q.ts_code) as stock_count,
@@ -67,7 +67,7 @@ SQL
 
 ### 第 3 步：北向资金趋势
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT trade_date, hsgt_net_amount, north_money
    FROM fact_money_flow
    WHERE trade_date >= date('now', '-10 days')
@@ -76,7 +76,7 @@ sqlite3 /workspace/stock_downloader/stock_data.db \
 
 ### 第 4 步：近 7 天政策催化
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT event_date, source, title, sectors
    FROM fact_macro_narratives
    WHERE event_date >= date('now', '-7 days') AND importance >= 4
@@ -85,7 +85,7 @@ sqlite3 /workspace/stock_downloader/stock_data.db \
 
 ### 第 5 步：成交量
 ```bash
-sqlite3 /workspace/stock_downloader/stock_data.db \
+sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} \
   "SELECT trade_date, ROUND(SUM(amount)/100000000, 2) as total_amt_billion
    FROM fact_daily_quotes
    WHERE trade_date >= date('now', '-10 days')

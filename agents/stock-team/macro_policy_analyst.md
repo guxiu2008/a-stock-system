@@ -29,27 +29,27 @@ permission:
 
 ```bash
 # 获取当前政策聚焦（过去30天）
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --policy-focus 30
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --policy-focus 30
 
 # 获取当前政策聚焦（过去7天）
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --policy-focus 7
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --policy-focus 7
 
 # 检查特定行业事件影响
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --check-impact "人工智能"
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --check-impact "新能源"
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --check-impact "半导体"
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --check-impact "人工智能"
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --check-impact "新能源"
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --check-impact "半导体"
 
 # 判断宏观安全期（过去14天）
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --safe-period 14
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --safe-period 14
 
 # 按关键词查询
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --query-keyword "政策"
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --query-keyword "政策"
 
 # 按日期范围查询
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --query-date-range 20240101 20240331
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --query-date-range 20240101 20240331
 
 # 更新所有宏观政策数据
-cd /workspace/stock_downloader && python ./scripts/macro_policy_scrapper/cli.py --update-all --start-date 20240101 --end-date 20241231
+${PYTHON_BIN:-python3} ${STOCK_PROJECT_DIR:-/workspace/stock_downloader}/scripts/macro_policy_scrapper/cli.py --update-all --start-date 20240101 --end-date 20241231
 ```
 
 ### 2. Tavily 网页搜索技能

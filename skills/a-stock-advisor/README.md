@@ -94,13 +94,24 @@ a-stock-advisor/
 │   ├── daily_pick.py
 │   ├── evaluate_stock.py
 │   └── lib/
+│       ├── __init__.py
+│       ├── db.py
+│       ├── cache.py
 │       ├── financials.py
 │       ├── news_verifier.py
 │       └── strategy.py
 └── reference/
     ├── mindset_v2.md     # 方法论摘要
-    └── backtest_summary.md
+    ├── backtest_summary.md
+    └── swing_mode.md
 ```
+
+## 调试
+
+如果脚本失败：
+1. 检查 Python 是否安装了 pandas: `${PYTHON_BIN:-python3} -c "import pandas"`
+2. 检查数据库可读: `sqlite3 ${STOCK_DB_PATH:-/workspace/stock_downloader/stock_data.db} ".tables"`
+3. 单独跑脚本看错误: `${PYTHON_BIN:-python3} daily_pick.py --json 2>&1 | head -50`
 
 ## 相关 subagent
 
