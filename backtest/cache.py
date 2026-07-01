@@ -43,7 +43,7 @@ class MarketCache:
         sql = """
         SELECT q.ts_code, q.trade_date, q.open, q.high, q.low, q.close, q.pct_chg, q.vol,
                mi.ma5, mi.ma10, mi.ma20, mi.ma60,
-               mi.macd, mi.macd_hist, mi.kdj_j, mi.rsi6, mi.boll_upper
+               mi.macd, mi.macd_hist, mi.kdj_k, mi.kdj_d, mi.kdj_j, mi.rsi6, mi.boll_upper
         FROM fact_daily_quotes q
         LEFT JOIN market_indicators mi
           ON q.ts_code = mi.ts_code AND q.trade_date = mi.trade_date
@@ -99,8 +99,26 @@ class MarketCache:
 
         print("  - precomputing buy_score...", end=" ", flush=True)
         df["s_ma20"] = (df["close"] > df["ma20"]).astype("int8")
-        df["s_macd"] = ((df["macd"] > 0) & (df["macd_hist"] > 0)).astype("int8")
-        df["s_kdj"] = ((df["kdj_j"] >= 20) & (df["kdj_j"] <= 80)).astype("int8")
+        # MACD: >0 + 柱状>0 + 柱状没有连续2天收缩超过30%（避免动能衰竭，与实盘一致）
+        grouped = df.groupby("ts_code")
+        df["macd_hist_prev"] = grouped["macd_hist"].shift(1)
+        df["macd_hist_prev2"] = grouped["macd_hist"].shift(2)
+        df["s_macd"] = (
+            (df["macd"] > 0)
+            & (df["macd_hist"] > 0)
+            & ~(
+                (df["macd_hist_prev"] > 0)
+                & (df["macd_hist"] < df["macd_hist_prev"] * 0.7)
+                & (df["macd_hist_prev"] < df["macd_hist_prev2"] * 0.7)
+            )
+        ).astype("int8")
+        # KDJ: J在20~80之间 + K>D(多头排列) + J没有3天内从>80急跌到<60（与实盘一致）
+        df["kdj_j_3d_ago"] = grouped["kdj_j"].shift(3)
+        df["s_kdj"] = (
+            (df["kdj_j"] >= 20) & (df["kdj_j"] <= 80)
+            & (df["kdj_k"] > df["kdj_d"])
+            & ~((df["kdj_j_3d_ago"] > 80) & (df["kdj_j"] < 60))
+        ).astype("int8")
         df["s_rsi"] = ((df["rsi6"] >= 30) & (df["rsi6"] <= 70)).astype("int8")
         df["s_boll"] = (df["close"] < df["boll_upper"]).astype("int8")
         df["buy_score"] = df["s_ma20"] + df["s_macd"] + df["s_kdj"] + df["s_rsi"] + df["s_boll"]

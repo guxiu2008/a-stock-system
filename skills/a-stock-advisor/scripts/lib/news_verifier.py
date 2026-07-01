@@ -119,6 +119,9 @@ class NewsVerifier:
                 "snippet": self._shorten(content, 100),
                 "source_score": source_score,
             })
+        # 来源评分累计上限 30，防止单维度主导
+        source_total = sum(s.get("source_score", 0) for s in sources)
+        score = score - source_total + min(source_total, 30)
         if len(domains) >= 3:
             score += 8
         elif len(domains) == 1 and sources:
@@ -188,7 +191,7 @@ class NewsVerifier:
         return 1
 
     def _has_catalyst(self, text: str) -> bool:
-        return any(x in text for x in ["中标", "订单", "合同", "合作", "增持", "回购", "业绩增长", "预增", "政策支持", "产能", "新品", "并购", "重组"])
+        return any(x in text for x in ["中标", "订单", "合同", "合作", "增持", "回购", "业绩增长", "预增", "政策支持", "产能", "新品"])
 
     def _has_partner_signal(self, text: str) -> bool:
         return any(x in text for x in ["合作方", "签约", "战略合作", "供应商", "客户", "联合", "中标", "采购"])

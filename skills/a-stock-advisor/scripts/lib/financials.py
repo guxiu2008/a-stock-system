@@ -15,7 +15,7 @@ class FinancialAnalyzer:
                    total_assets, total_liab, roe, roe_waa, grossprofit_margin,
                    netprofit_margin, debt_to_assets
             FROM fact_financial_reports
-            WHERE ts_code = ? AND (ann_date IS NULL OR ann_date <= ?)
+            WHERE ts_code = ? AND ann_date IS NOT NULL AND ann_date <= ?
             ORDER BY end_date DESC
             LIMIT 12
             """,
@@ -26,7 +26,7 @@ class FinancialAnalyzer:
             """
             SELECT end_date, ann_date, cash_div_tax, payout_ratio, div_proc
             FROM fact_dividend_history
-            WHERE ts_code = ? AND (ann_date IS NULL OR ann_date <= ?)
+            WHERE ts_code = ? AND ann_date IS NOT NULL AND ann_date <= ?
             ORDER BY end_date DESC
             LIMIT 8
             """,
@@ -70,9 +70,18 @@ class FinancialAnalyzer:
                 roe_display = f"全年{roe_annual:.2f}%"
                 effective_roe = roe_annual
             elif is_quarterly:
-                roe_annualized = roe * 4
-                roe_display = f"单季{roe:.2f}%（年化{roe_annualized:.1f}%)"
-                effective_roe = min(roe_annualized, roe * 2)
+                # 季度 ROE 年化：用最近 4 个季度滚动求和（更准确）
+                recent_4q = reports.head(4)
+                q_roe_values = [self._num(r.get("roe")) or self._num(r.get("roe_waa")) for _, r in recent_4q.iterrows()]
+                q_roe_values = [v for v in q_roe_values if v is not None]
+                if len(q_roe_values) >= 3:
+                    rolling_annual = sum(q_roe_values)
+                    roe_display = f"单季{roe:.2f}%（滚动年化{rolling_annual:.1f}%)"
+                    effective_roe = rolling_annual
+                else:
+                    roe_annualized = roe * 4
+                    roe_display = f"单季{roe:.2f}%（年化{roe_annualized:.1f}%)"
+                    effective_roe = min(roe_annualized, roe * 2)
             else:
                 roe_display = f"{roe:.2f}%"
                 effective_roe = roe
@@ -152,11 +161,11 @@ class FinancialAnalyzer:
         margin_explosion = False
         if not margin_data_suspicious and gross_margin is not None and net_margin is not None and gross_margin >= 60 and net_margin >= 50:
             margin_explosion = True
-            score += 25
+            score += 15
             notes.append(f"毛利率{gross_margin:.2f}% + 净利率{net_margin:.2f}%：超高盈利水平，业绩核爆级表现！")
         elif not margin_data_suspicious and gross_margin is not None and net_margin is not None and gross_margin >= 50 and net_margin >= 35:
             margin_explosion = True
-            score += 20
+            score += 12
             notes.append(f"毛利率{gross_margin:.2f}% + 净利率{net_margin:.2f}%：极高盈利能力，行业龙头定价权")
         
         if is_investment_type:
@@ -306,7 +315,9 @@ class FinancialAnalyzer:
             return True
         if debt is not None and debt > 85:
             return True
-        if profit_yoy is not None and profit_yoy < -50 and revenue_yoy is not None and revenue_yoy < -20:
+        if profit_yoy is not None and profit_yoy < -50:
+            return True
+        if revenue_yoy is not None and revenue_yoy < -30:
             return True
         if ocf_np is not None and ocf_np < -0.5:
             return True

@@ -33,6 +33,8 @@ def evaluate(cache, ts_code):
         "industry": meta["industry"],
         "date": cache.latest_date,
         "market_trend": trend,
+        "index_rsi": cache.index_rsi(),
+        "rsi_signal": cache.rsi_signal(),
         "close": round(float(row["close"]), 2),
         "scores": {},
         "details": {},
@@ -66,6 +68,10 @@ def evaluate(cache, ts_code):
     total = sum(result["scores"].values())
     result["total_score"] = total
     result["max_score"] = 30  # 每个维度满分 5
+
+    # ATR 动态止损
+    result["atr"] = compute_atr(history)
+    result["atr_pct"] = round(result["atr"] / result["close"] * 100, 2) if result["atr"] and result["close"] else None
 
     # 决策
     result["recommendation"] = make_recommendation(total, result)
@@ -145,8 +151,7 @@ def score_trend(history, row, result):
             score += 2
             notes.append(f"[+2] 近3日累计 {cum_3d:+.2f}% (温和上涨)")
         elif cum_3d >= 10:
-            score += 1
-            notes.append(f"[+1] 近3日累计 {cum_3d:+.2f}% (过热)")
+            notes.append(f"[+0] 近3日累计 {cum_3d:+.2f}% (过热，追高风险)")
         elif -3 < cum_3d <= 0:
             score += 1
             notes.append(f"[+1] 近3日累计 {cum_3d:+.2f}% (横盘)")
@@ -199,6 +204,9 @@ def score_volume(history, result):
         elif 0.8 <= ratio < 1.2:
             score += 2
             notes.append(f"[+2] 近5日量比 {ratio:.2f} (持平)")
+        elif 0.5 <= ratio < 0.8:
+            score += 1
+            notes.append(f"[+1] 近5日量比 {ratio:.2f} (轻微缩量)")
         else:
             notes.append(f"[+0] 近5日量比 {ratio:.2f} (缩量)")
 
@@ -210,6 +218,14 @@ def score_volume(history, result):
             score += 1
             notes.append(f"[+1] 近5日有 {up_days} 天上涨")
 
+    # 量能趋势：近5日均量 vs 前5日均量
+    if len(history) >= 10:
+        vol_5d_recent = history.tail(5)["vol"].mean()
+        vol_5d_prior = history.tail(10).head(5)["vol"].mean()
+        if vol_5d_prior > 0 and vol_5d_recent > vol_5d_prior * 1.1:
+            score += 1
+            notes.append(f"[+1] 量能趋势向上 (近5日 vs 前5日)")
+
     if not notes:
         notes.append("[+0] 量能数据不足")
     result["details"]["volume"] = {"notes": notes}
@@ -217,13 +233,25 @@ def score_volume(history, result):
 
 
 def score_market(trend, result):
-    """大盘配合打分（0-5）"""
-    score = {"上升趋势": 5, "震荡市": 3, "下跌趋势": 1, "unknown": 2}.get(trend, 2)
-    notes = [f"[+{score}] 大盘 {trend}"]
+    """大盘配合打分（0-5），融入趋势+RSI"""
+    base = {"上升趋势": 5, "震荡市": 3, "下跌趋势": 1, "unknown": 2}.get(trend, 2)
+    rsi = result.get("index_rsi", 50)
+    rsi_signal = result.get("rsi_signal", "正常")
+
+    if trend == "上升趋势" and rsi_signal in ("极度超买", "超买"):
+        base = 3
+    elif trend == "下跌趋势" and rsi_signal in ("极度超卖", "超卖"):
+        base = 2
+    elif trend == "震荡市" and rsi_signal in ("极度超卖", "超卖"):
+        base = 4
+
+    notes = [f"[+{base}] 大盘 {trend}"]
+    if rsi_signal != "正常":
+        notes.append(f"  RSI信号: {rsi_signal} (RSI={rsi:.1f})")
     if trend == "下跌趋势":
         notes.append("  下跌市中只做超跌反弹,不追涨")
     result["details"]["market"] = {"notes": notes, "trend": trend}
-    return score
+    return base
 
 
 def score_risk(cache, ts_code, row, history, result):
@@ -264,6 +292,22 @@ def score_risk(cache, ts_code, row, history, result):
     return max(0, min(5, score))
 
 
+def compute_atr(history, period=14):
+    """计算 ATR（平均真实波幅），用于动态止损"""
+    if history.empty or len(history) < period + 1:
+        return None
+    h = history.tail(period + 1)
+    high = h["high"].astype(float)
+    low = h["low"].astype(float)
+    close_prev = h["close"].shift(1).astype(float)
+    tr = pd.concat([
+        (high - low).abs(),
+        (high - close_prev).abs(),
+        (low - close_prev).abs(),
+    ], axis=1).max(axis=1)
+    return float(tr.tail(period).mean())
+
+
 def make_recommendation(total, result):
     """根据综合打分生成建议"""
     market = result["market_trend"]
@@ -278,10 +322,10 @@ def make_recommendation(total, result):
             "reason": "风险评分过低（ST/次新/异常下跌等）",
             "confidence": "高",
         }
-    if fund == 0 and tech == 0:
+    if fund <= 1 and tech <= 1:
         return {
             "action": "回避",
-            "reason": "基本面 + 技术面都没有信号",
+            "reason": "基本面 + 技术面均极弱，无任何信号支撑",
             "confidence": "高",
         }
     if market == "下跌趋势" and tech < 3:
@@ -367,12 +411,29 @@ def format_text(result):
 
     # 给出参考价位
     close = result["close"]
+    atr = result.get("atr")
+    atr_pct = result.get("atr_pct")
+    if atr and atr > 0:
+        # ATR×1.5 为主止损，硬上限 -10%（确保盈亏比 ≥ 1.5:1）
+        atr_stop = round(close - atr * 1.5, 2)
+        hard_cap = round(close * 0.90, 2)  # 最大允许 -10%
+        stop_loss = max(atr_stop, hard_cap)
+        stop_pct = round((stop_loss / close - 1) * 100, 1)
+        if stop_loss == hard_cap and atr_stop < hard_cap:
+            stop_note = f"  (ATR×1.5={atr_stop:.2f} 过宽，已收紧至 -10% 硬上限, {stop_pct:+.1f}%)"
+        else:
+            stop_note = f"  (ATR×1.5, {stop_pct:+.1f}%)"
+    else:
+        stop_loss = round(close * 0.93, 2)
+        stop_note = "  (-7%, ATR不可用，使用固定止损)"
     lines.append(f"")
     lines.append(f"【参考价位】")
     lines.append(f"  建议买入区间: {close*0.97:.2f} ~ {close*1.00:.2f}")
-    lines.append(f"  止损位:       {close*0.93:.2f}  (-7%)")
+    lines.append(f"  止损位:       {stop_loss}{stop_note}")
     lines.append(f"  第一目标:     {close*1.08:.2f}  (+8%)")
     lines.append(f"  第二目标:     {close*1.15:.2f}  (+15%)")
+    if atr_pct:
+        lines.append(f"  ATR(14):      {atr:.2f} ({atr_pct}% of price)")
     lines.append("=" * 70)
     lines.append("[免责] 仅供参考，不构成投资建议。请严格执行止损纪律。")
 

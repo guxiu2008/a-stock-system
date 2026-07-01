@@ -52,6 +52,7 @@ def main():
             end_date=args.end_date,
             period=args.period
         )
+        master.update_revenue_segments(ts_code=args.ts_code, period=args.period)
     elif args.update_10y:
         master.update_last_10_years(ts_code=args.ts_code)
     elif args.query:

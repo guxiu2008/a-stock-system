@@ -73,7 +73,7 @@ class BacktestEngine:
                 if buy_price is None or buy_price <= 0:
                     continue
 
-                stop_loss = max(buy_price * 0.93, pick["ma20"] if pick.get("ma20") else buy_price * 0.93)
+                stop_loss = round(max(buy_price * 0.93, pick["ma20"] * 0.97 if pick.get("ma20") else buy_price * 0.93), 2)
                 target_price = buy_price * 1.08
 
                 # 单票预算

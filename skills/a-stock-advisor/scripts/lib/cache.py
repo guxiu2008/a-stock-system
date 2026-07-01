@@ -55,7 +55,7 @@ class LiveCache:
         cur = self.conn.execute("""
             SELECT ts_code, roe, grossprofit_margin, netprofit_margin, net_profit
             FROM fact_financial_reports
-            WHERE roe IS NOT NULL AND (ann_date IS NULL OR ann_date <= ?)
+            WHERE roe IS NOT NULL AND ann_date IS NOT NULL AND ann_date <= ?
             ORDER BY end_date DESC
         """, (self.latest_date,))
         self.latest_roe = {}
@@ -107,6 +107,27 @@ class LiveCache:
         vol_5d = grouped["vol"].transform(lambda s: s.rolling(5, min_periods=3).mean())
         vol_20d = grouped["vol"].transform(lambda s: s.rolling(20, min_periods=10).mean())
         self.quotes["vol_ratio_5_20"] = vol_5d / vol_20d
+
+        # ATR(14) 动态止损用
+        tr = pd.concat([
+            (self.quotes["high"] - self.quotes["low"]).abs(),
+            (self.quotes["high"] - grouped["close"].shift(1)).abs(),
+            (self.quotes["low"] - grouped["close"].shift(1)).abs(),
+        ], axis=1).max(axis=1)
+        self.quotes["atr14"] = grouped["close"].transform(lambda _: tr).groupby(self.quotes["ts_code"]).transform(
+            lambda s: s.rolling(14, min_periods=10).mean()
+        )
+
+        # 估值代理：当前价在 60/120 日区间中的分位（0=底部，1=顶部）
+        self.quotes["price_60d_pct"] = (
+            (self.quotes["close"] - self.quotes["low_60d"])
+            / (self.quotes["high_60d"] - self.quotes["low_60d"])
+        ).clip(0, 1)
+        low_120d = grouped["low"].transform(lambda s: s.rolling(120, min_periods=40).min())
+        high_120d = grouped["high"].transform(lambda s: s.rolling(120, min_periods=40).max())
+        self.quotes["price_120d_pct"] = (
+            (self.quotes["close"] - low_120d) / (high_120d - low_120d)
+        ).clip(0, 1)
 
         # 预计算买入信号
         self.quotes["s_ma20"] = (self.quotes["close"] > self.quotes["ma20"]).astype("int8")
@@ -162,14 +183,21 @@ class LiveCache:
         idx_df.loc[(idx_df["rsi6"] <= 20), "rsi_signal"] = "极度超卖"
         idx_df.loc[(idx_df["rsi6"] > 20) & (idx_df["rsi6"] <= 30), "rsi_signal"] = "超卖"
         
-        # 情绪温度计 0-100
+        # 情绪温度计 0-100（综合 RSI + 成交量 + 涨跌幅）
         idx_df["sentiment"] = 50  # 中性
-        idx_df.loc[idx_df["rsi6"] >= 80, "sentiment"] = 95
-        idx_df.loc[(idx_df["rsi6"] >= 70) & (idx_df["rsi6"] < 80), "sentiment"] = 80
-        idx_df.loc[(idx_df["rsi6"] >= 60) & (idx_df["rsi6"] < 70), "sentiment"] = 65
-        idx_df.loc[(idx_df["rsi6"] > 30) & (idx_df["rsi6"] < 40), "sentiment"] = 35
-        idx_df.loc[(idx_df["rsi6"] > 20) & (idx_df["rsi6"] <= 30), "sentiment"] = 20
-        idx_df.loc[idx_df["rsi6"] <= 20, "sentiment"] = 5
+        idx_df.loc[idx_df["rsi6"] >= 80, "sentiment"] = 90
+        idx_df.loc[(idx_df["rsi6"] >= 70) & (idx_df["rsi6"] < 80), "sentiment"] = 75
+        idx_df.loc[(idx_df["rsi6"] >= 60) & (idx_df["rsi6"] < 70), "sentiment"] = 62
+        idx_df.loc[(idx_df["rsi6"] > 30) & (idx_df["rsi6"] < 40), "sentiment"] = 38
+        idx_df.loc[(idx_df["rsi6"] > 20) & (idx_df["rsi6"] <= 30), "sentiment"] = 25
+        idx_df.loc[idx_df["rsi6"] <= 20, "sentiment"] = 10
+
+        # 成交量修正：缩量上涨减情绪，放量下跌加恐慌
+        idx_df["vol_ratio"] = idx_df["vol"] / idx_df["vol"].rolling(20, min_periods=10).mean()
+        idx_df.loc[(idx_df["pct_chg"] > 0.5) & (idx_df["vol_ratio"] < 0.7), "sentiment"] -= 8
+        idx_df.loc[(idx_df["pct_chg"] < -0.5) & (idx_df["vol_ratio"] > 1.5), "sentiment"] -= 8
+        idx_df.loc[(idx_df["pct_chg"] > 1.0) & (idx_df["vol_ratio"] > 1.5), "sentiment"] += 5
+        idx_df["sentiment"] = idx_df["sentiment"].clip(5, 95)
         
         # 极端涨跌幅标记
         idx_df["extreme_move"] = False
@@ -318,7 +346,7 @@ class LiveCache:
         if pct > 1.5 and rsi > 75:
             bearish_signals += 2
         
-        score = 50 + (bullish_signals - bearish_signals) * 8
+        score = 50 + (bullish_signals - bearish_signals) * 6
         score = max(5, min(95, score))
         
         if score >= 75:

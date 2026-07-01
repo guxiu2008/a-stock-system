@@ -79,6 +79,8 @@ class V2Strategy:
             sub = sub[sub["latest_roe"] >= self.min_roe]
         # 3 日累计涨幅 > 0
         sub = sub[sub["cum_3d_pct"] > 0]
+        # 站上 MA20（与实盘 short 模式一致）
+        sub = sub[sub["close"] > sub["ma20"]]
 
         if sub.empty:
             return []

@@ -86,8 +86,8 @@ def enrich_and_rerank(result: dict, cache: LiveCache, fast: bool = False, final_
 
 def calc_final_score(p: dict) -> float:
     technical = p.get("buy_score", 0) * 12
-    momentum = (p.get("ret_20d_pct") or p.get("cum_3d_pct") or 0) * 0.35 + (p.get("ret_60d_pct") or 0) * 0.15
-    roe = (p.get("latest_roe") or 0) * 0.4
+    momentum = min((p.get("ret_20d_pct") or p.get("cum_3d_pct") or 0), 40) * 0.35 + min((p.get("ret_60d_pct") or 0), 60) * 0.15
+    roe = min((p.get("latest_roe") or 0), 30) * 0.4
     financial = p.get("financial", {}).get("score", 0) * 0.35
     news = p.get("news", {}).get("score", 50) * 0.15
     penalties = 0
@@ -304,6 +304,11 @@ def format_text(result: dict) -> str:
             if p.get("second_target_price"):
                 lines.append(f"       第二目标: {p['second_target_price']:.2f}  (+{(p['second_target_price']/p['close']-1)*100:.1f}%)")
             lines.append(f"       止损位:   {p['stop_loss']:.2f}  ({(p['stop_loss']/p['close']-1)*100:+.1f}%)")
+            if p.get("atr14"):
+                lines.append(f"       ATR(14):   {p['atr14']:.2f}  (止损基于 ATR×1.5 + 硬上限保护)")
+            if p.get("price_120d_pct") is not None:
+                pct_label = "🔥 高位" if p["price_120d_pct"] > 0.7 else "⚪ 中位" if p["price_120d_pct"] > 0.3 else "❄️ 低位"
+                lines.append(f"       估值分位:  {p['price_120d_pct']:.0%}（120日区间）{pct_label}")
             
             if risk_reward:
                 if risk_reward < 1.2:

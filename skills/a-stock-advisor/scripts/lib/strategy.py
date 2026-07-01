@@ -181,6 +181,7 @@ class StockSelector:
         target_inds = self._target_industries(ind_perf)
         sub = self._base_filter(df[df["industry"].isin(target_inds)].copy(), date)
         sub = sub[sub["cum_3d_pct"] > 0]
+        sub = sub[sub["close"] > sub["ma20"]]
         return self._finish_selection(sub, result, date, metric="cum_3d_pct", candidate_limit=candidate_limit)
 
     def _select_swing(self, df: pd.DataFrame, result: dict, date: str, candidate_limit: int = 5) -> dict:
@@ -209,10 +210,10 @@ class StockSelector:
         sub = sub[sub["close"] > sub["ma60"]]
         sub = sub[sub["vol_ratio_5_20"].fillna(1).between(0.7, 3.5)]
         sub["swing_score"] = (
-            sub["buy_score"] * 10
-            + sub["ret_20d_pct"].clip(-10, 30) * 0.6
-            + sub["ret_60d_pct"].clip(-20, 60) * 0.25
-            + sub["latest_roe"].fillna(0).clip(-5, 20) * 0.2
+            sub["buy_score"] * 8
+            + sub["ret_20d_pct"].clip(-10, 30) * 0.5
+            + sub["ret_60d_pct"].clip(-20, 60) * 0.3
+            + sub["latest_roe"].fillna(0).clip(-5, 25) * 0.6
             - sub["dist_60d_high_pct"].abs().clip(0, 20) * 0.05
         )
         return self._finish_selection(sub, result, date, metric="swing_score", candidate_limit=candidate_limit)
@@ -222,11 +223,11 @@ class StockSelector:
         df = df.dropna(subset=["latest_roe", "gross_margin", "ma60"])
         
         df["growth_score"] = (
-            df["latest_roe"].clip(0, 40) * 3.0
-            + df["gross_margin"].fillna(0).clip(0, 80) * 0.8
-            + df["net_margin"].fillna(0).clip(0, 50) * 0.5
+            df["latest_roe"].clip(0, 40) * 2.5
+            + df["gross_margin"].fillna(0).clip(0, 80) * 0.6
+            + df["net_margin"].fillna(0).clip(0, 50) * 0.4
         )
-        
+
         ind_perf = df.groupby("industry").agg(
             mean_growth=("growth_score", "mean"),
             mean_roe=("latest_roe", "mean"),
@@ -239,19 +240,19 @@ class StockSelector:
             {"industry": r["industry"], "growth_score": round(r["mean_growth"], 2), "mean_roe": round(r["mean_roe"], 2), "stock_count": int(r["count"])}
             for _, r in ind_perf.head(15).iterrows()
         ]
-        
+
         sub = self._base_filter(df.copy(), date)
-        
+
         if sub.empty:
             result["notes"].append(f"无满足基本面条件的个股（ROE≥{self.min_roe}%）")
             return result
-        
+
         sub = sub[sub["close"] > sub["ma60"]]
         sub = sub[sub["ret_20d_pct"] > -15]
-        
+
         sub["final_score"] = (
-            sub["growth_score"] * 2.0
-            + sub["buy_score"].clip(0, 5) * 5.0
+            sub["growth_score"] * 1.2
+            + sub["buy_score"].clip(0, 5) * 6.0
             + sub["ret_20d_pct"].clip(-15, 30) * 0.3
         )
         
@@ -280,42 +281,76 @@ class StockSelector:
             sub = sub[sub["latest_roe"] >= self.min_roe]
         if self.exclude_industries:
             sub = sub[~sub["industry"].isin(self.exclude_industries)]
+        # 估值过滤：排除价格处于 120 日区间顶部 15% 的股票（过热，追高风险大）
+        if "price_120d_pct" in sub.columns:
+            original_count = len(sub)
+            sub = sub[sub["price_120d_pct"] <= 0.85]
+            if len(sub) < original_count:
+                pass  # 静默过滤，不污染 notes
         return sub
 
     def _finish_selection(self, sub: pd.DataFrame, result: dict, date: str, metric: str, candidate_limit: int = 5) -> dict:
         if sub.empty:
             result["notes"].append("选定行业内无符合基本条件的个股")
             return result
-        rank_metric = metric if metric in sub.columns else "cum_3d_pct"
-        sub["pct_rank"] = sub.groupby("industry")[rank_metric].rank(pct=True)
-        sub = sub[(sub["pct_rank"] >= self.mid_pct_lo) & (sub["pct_rank"] <= self.mid_pct_hi)]
-        
-        # 提高技术面门槛：MA20是趋势核心指标，跌破MA20直接排除
+
+        # 趋势过滤（在分位排名之前执行，保持统计意义）
         trend_mode = self.mode in ["swing", "growth"]
         if trend_mode and "s_ma20" in sub.columns:
             original_count = len(sub)
             sub = sub[sub["s_ma20"] == 1]
             if original_count > len(sub):
                 result["notes"].append(f"过滤掉 {original_count - len(sub)} 只跌破MA20的股票（中期趋势走弱）")
-        
-        # MACD翻绿也要扣分排除
+
         if trend_mode and "s_macd" in sub.columns:
             original_count = len(sub)
             sub = sub[sub["s_macd"] == 1]
             if original_count > len(sub):
                 result["notes"].append(f"过滤掉 {original_count - len(sub)} 只MACD翻绿的股票（动能减弱）")
-        
+
         sub = sub[sub["buy_score"] >= self.min_buy_score]
         if sub.empty:
             result["notes"].append(f"无个股技术面信号足够强（打分 >= {self.min_buy_score}）")
             return result
+
+        rank_metric = metric if metric in sub.columns else "cum_3d_pct"
+        sub["pct_rank"] = sub.groupby("industry")[rank_metric].rank(pct=True)
+        sub = sub[(sub["pct_rank"] >= self.mid_pct_lo) & (sub["pct_rank"] <= self.mid_pct_hi)]
+
+        if sub.empty:
+            result["notes"].append("分位排名筛选后无符合条件的个股")
+            return result
+
         sub = sub.sort_values(["buy_score", rank_metric], ascending=[False, False])
         max_picks = result["position_rule"]["max_picks"]
         result["candidate_pool_size"] = min(candidate_limit, len(sub))
-        top = sub.head(candidate_limit)
-        for rank, (ts_code, row) in enumerate(top.iterrows(), 1):
+
+        # 行业分散：同一行业最多选 2 只
+        top = []
+        industry_count = {}
+        for ts_code, row in sub.iterrows():
+            ind = row.get("industry", "")
+            if industry_count.get(ind, 0) >= 2:
+                continue
+            industry_count[ind] = industry_count.get(ind, 0) + 1
+            top.append((ts_code, row))
+            if len(top) >= candidate_limit:
+                break
+
+        for rank, (ts_code, row) in enumerate(top, 1):
             result["picks"].append(self._build_pick(ts_code, row, rank, max_picks))
         return result
+
+    def _buy_high(self, close: float, ma5=None, ma10=None, boll_upper=None) -> float:
+        """买入区间上限：取最近的技术阻力位"""
+        candidates = [close * 1.03]  # 硬上限 +3%
+        if boll_upper is not None and boll_upper > close:
+            candidates.append(boll_upper)  # 布林上轨
+        if ma5 is not None and ma5 > close:
+            candidates.append(ma5)  # 5日均线
+        if ma10 is not None and ma10 > close:
+            candidates.append(ma10)  # 10日均线
+        return round(min(candidates), 2)
 
     def _build_pick(self, ts_code: str, row: pd.Series, rank: int, max_picks: int) -> dict:
         name = self.cache.universe.loc[ts_code, "name"] if ts_code in self.cache.universe.index else "?"
@@ -323,37 +358,72 @@ class StockSelector:
         ma20 = float(row["ma20"]) if pd.notna(row["ma20"]) else close
         ma60 = float(row["ma60"]) if pd.notna(row.get("ma60")) else close
         boll_lower = float(row["boll_lower"]) if pd.notna(row.get("boll_lower")) else None
-        
+        atr14 = float(row["atr14"]) if pd.notna(row.get("atr14")) and row.get("atr14") > 0 else None
+        price_60d_pct = float(row["price_60d_pct"]) if pd.notna(row.get("price_60d_pct")) else None
+        price_120d_pct = float(row["price_120d_pct"]) if pd.notna(row.get("price_120d_pct")) else None
+
+        # ATR 动态止损：ATR×1.5 为基准，硬上限防止盈亏比倒挂
+        if atr14 is not None:
+            atr_stop = round(close - atr14 * 1.5, 2)
+        else:
+            atr_stop = None
+
         if self.mode == "short":
             low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
-            stop_loss = round(max(ma20 * 0.97, close * 0.93), 2)
-            # 如果止损位高于60日最低点，推到最低点以下（避免被洗出去）
-            if low_60d > 0 and stop_loss > low_60d * 0.98:
-                stop_loss = round(low_60d * 0.97, 2)
-            target = round(close * 1.08, 2)
+            high_60d = float(row["high_60d"]) if pd.notna(row.get("high_60d")) else None
+            # 短线：ATR×1.5 为主，硬上限 -7%，MA20 和 60日低点为辅
+            hard_cap = round(close * 0.93, 2)
+            candidates = [hard_cap]
+            if atr_stop is not None:
+                candidates.append(atr_stop)
+            candidates.append(ma20 * 0.97)
+            if low_60d > 0:
+                candidates.append(low_60d * 0.97)
+            stop_loss = round(max(candidates), 2)
+            target = round(min(close * 1.08, high_60d * 0.98) if high_60d and high_60d > close else close * 1.08, 2)
             second_target = round(close * 1.15, 2)
             hold_period = "2~4 周（短线）"
-            buy_range = [round(max(ma20, close * 0.97, low_60d * 1.02), 2), round(close, 2)]
+            buy_high = self._buy_high(close, row.get("ma5"), row.get("ma10"), row.get("boll_upper"))
+            buy_range = [round(max(ma20, close * 0.97, low_60d * 1.02), 2), buy_high]
         elif self.mode == "growth":
             low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
-            stop_loss = round(max(ma60 * 0.95, close * 0.85, low_60d * 0.95), 2)
-            target = round(close * 1.25, 2)
+            high_60d = float(row["high_60d"]) if pd.notna(row.get("high_60d")) else None
+            # 成长：ATR×1.5 为主，硬上限 -12%，MA60 和 60日低点为辅
+            hard_cap = round(close * 0.88, 2)
+            candidates = [hard_cap]
+            if atr_stop is not None:
+                candidates.append(atr_stop)
+            candidates.append(ma60 * 0.95)
+            if low_60d > 0:
+                candidates.append(low_60d * 0.95)
+            stop_loss = round(max(candidates), 2)
+            target = round(min(close * 1.25, high_60d * 0.98) if high_60d and high_60d > close else close * 1.25, 2)
             second_target = round(close * 1.40, 2)
             hold_period = "3~6 个月（中期成长）"
-            buy_range = [round(max(ma60, close * 0.92, low_60d * 1.02), 2), round(close, 2)]
+            buy_high = self._buy_high(close, row.get("ma5"), row.get("ma10"), row.get("boll_upper"))
+            buy_range = [round(max(ma60, close * 0.92, low_60d * 1.02), 2), buy_high]
         else:
-            # 中期波段：止损基于MA20、布林下轨、60日低点
             low_60d = float(row["low_60d"]) if pd.notna(row.get("low_60d")) else close
+            high_60d = float(row["high_60d"]) if pd.notna(row.get("high_60d")) else None
+            # 波段：ATR×1.5 为主，硬上限 -10%，布林下轨和均线为辅
+            hard_cap = round(close * 0.90, 2)
+            candidates = [hard_cap]
+            if atr_stop is not None:
+                candidates.append(atr_stop)
             if boll_lower is not None and boll_lower > 0:
-                stop_loss = round(max(ma20 * 0.97, boll_lower * 0.98, low_60d * 0.97), 2)
+                candidates.append(boll_lower * 0.98)
                 buy_low = round(max(ma20 * 0.98, boll_lower, low_60d * 1.02), 2)
             else:
-                stop_loss = round(max(ma20 * 0.97, close * 0.90, low_60d * 0.97), 2)
+                candidates.append(ma20 * 0.97)
                 buy_low = round(max(ma20 * 0.98, close * 0.95, low_60d * 1.02), 2)
-            target = round(close * 1.15, 2)
+            if low_60d > 0:
+                candidates.append(low_60d * 0.97)
+            stop_loss = round(max(candidates), 2)
+            target = round(min(close * 1.15, high_60d * 0.98) if high_60d and high_60d > close else close * 1.15, 2)
             second_target = round(close * 1.25, 2)
             hold_period = "1~3 个月（中期波段）"
-            buy_range = [buy_low, round(close, 2)]
+            buy_high = self._buy_high(close, row.get("ma5"), row.get("ma10"), row.get("boll_upper"))
+            buy_range = [buy_low, buy_high]
         return {
             "rank": rank,
             "actionable": rank <= max_picks,
@@ -381,6 +451,9 @@ class StockSelector:
             "risk_reward_ratio": round((target - close) / (close - stop_loss), 2) if close > stop_loss else None,
             "hold_period": hold_period,
             "suggested_position": self._suggest_position(close, stop_loss, target),
+            "atr14": round(atr14, 2) if atr14 else None,
+            "price_60d_pct": round(price_60d_pct, 2) if price_60d_pct is not None else None,
+            "price_120d_pct": round(price_120d_pct, 2) if price_120d_pct is not None else None,
         }
 
     def _suggest_position(self, close: float, stop_loss: float, target: float) -> dict:
