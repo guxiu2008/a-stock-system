@@ -186,7 +186,7 @@ class MarketQuotaSyncer:
         last_dates = {}
         if not sync_status.empty:
             for _, row in sync_status.iterrows():
-                last_dates[row['ts_code']] = row.get('last_trade_date', '')
+                last_dates[row['ts_code']] = row.get('last_sync_date', '')
         
         # 确定全局的起始日期（取最早的未同步日期）
         global_start_date = None

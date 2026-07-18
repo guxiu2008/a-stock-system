@@ -161,9 +161,17 @@ class FinancialDataFetcher:
         if df.empty:
             return pd.DataFrame()
 
+        # 字段映射：Tushare -> 数据库
+        # Tushare: n_income (净利润), net_after_nr_lp_correct (扣非净利润)
+        # 数据库: net_profit, deduct_profit
+        if 'n_income' in df.columns:
+            df['net_profit'] = df['n_income']
+        if 'net_after_nr_lp_correct' in df.columns:
+            df['deduct_profit'] = df['net_after_nr_lp_correct']
+
         # 只保留核心字段
         core_cols = ['ts_code', 'ann_date', 'end_date', 'report_type', 
-                     'revenue', 'net_profit', 'kcfjce', 'update_flag']
+                     'revenue', 'net_profit', 'deduct_profit', 'kcfjce', 'update_flag']
         available_cols = [col for col in core_cols if col in df.columns]
         df = df[available_cols].copy()
 
@@ -395,7 +403,7 @@ class FinancialDataFetcher:
         return df
 
     def fetch_mainbz_batch_generator(self, stock_list: List[str], period: str = None,
-                                     batch_size: int = 100):
+                                      batch_size: int = 300):
         """
         批量获取主营业务构成 - 生成器版本（边获取边返回）
 
@@ -417,19 +425,24 @@ class FinancialDataFetcher:
             batch = stock_list[i:i + batch_size]
             batch_num = i // batch_size + 1
 
-            ts_codes_str = ','.join(batch)
             print(f"  处理第 {batch_num}/{total_batches} 批: {batch[0]} ... {batch[-1]}")
 
-            try:
-                df = self.fetch_mainbz(ts_codes_str, period=period)
-                if not df.empty:
-                    total_count += len(df)
-                    elapsed = time.time() - start_time
-                    print(f"    成功获取 {df['ts_code'].nunique()} 只股票，{len(df)} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
-                    yield df
-            except Exception as e:
-                print(f"    批次失败: {e}")
-                continue
+            # fina_mainbz 不支持逗号分隔批量，逐只查询
+            batch_df = pd.DataFrame()
+            for ts_code in batch:
+                try:
+                    df = self.fetch_mainbz(ts_code, period=period)
+                    if not df.empty:
+                        batch_df = pd.concat([batch_df, df], ignore_index=True)
+                except Exception as e:
+                    pass
+            # fetch_mainbz 内部已有 REQUEST_DELAY 控制频率，此处不再额外等待
+
+            if not batch_df.empty:
+                total_count += len(batch_df)
+                elapsed = time.time() - start_time
+                print(f"    成功获取 {batch_df['ts_code'].nunique()} 只股票，{len(batch_df)} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
+                yield batch_df
 
         elapsed = time.time() - start_time
         print(f"主营业务构成批量获取完成！总耗时: {elapsed:.1f} 秒，总计 {total_count} 条记录")

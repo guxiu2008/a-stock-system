@@ -434,7 +434,7 @@ class FundamentalMaster:
     # ==================== 主营业务构成 ====================
 
     def update_revenue_segments(self, ts_code: str = None, period: str = None,
-                                batch_size: int = 100) -> int:
+                                batch_size: int = 300) -> int:
         """
         批量更新主营业务构成数据
 
@@ -504,13 +504,36 @@ class FundamentalMaster:
                 print(f"  该报告期数据已完整，跳过API调用")
                 continue
 
-            for df in self.fetcher.fetch_mainbz_batch_generator(missing_stocks, period=p,
-                                                                  batch_size=batch_size):
-                if not df.empty:
-                    count = self.db.save_revenue_segments(df)
+            # 多线程并行获取（Tushare 免费版 200次/分钟，5线程安全）
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+            
+            batch_size = 50
+            lock = threading.Lock()
+            
+            for i in range(0, len(missing_stocks), batch_size):
+                batch = missing_stocks[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                total_batches = (len(missing_stocks) + batch_size - 1) // batch_size
+                print(f"  处理第 {batch_num}/{total_batches} 批: {batch[0]} ... {batch[-1]} ({len(batch)} 只)")
+                
+                batch_df = pd.DataFrame()
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = {executor.submit(self.fetcher.fetch_mainbz, ts, p): ts for ts in batch}
+                    for future in as_completed(futures):
+                        try:
+                            df = future.result()
+                            if not df.empty:
+                                with lock:
+                                    batch_df = pd.concat([batch_df, df], ignore_index=True)
+                        except Exception:
+                            pass
+                
+                if not batch_df.empty:
+                    count = self.db.save_revenue_segments(batch_df)
                     total_count += count
                     elapsed = time.time() - start_time
-                    print(f"  报告期 {p} 保存 {count} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
+                    print(f"    保存 {count} 条记录，累计 {total_count} 条，耗时 {elapsed:.1f} 秒")
 
         elapsed = time.time() - start_time
         print("\n" + "=" * 60)

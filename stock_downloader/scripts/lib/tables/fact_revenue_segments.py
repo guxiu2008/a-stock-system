@@ -48,6 +48,12 @@ class FactRevenueSegmentsTable:
             print("错误：数据缺少 ts_code / end_date / bz_item 列")
             return 0
 
+        df = df.copy()
+        if 'bz_type' not in df.columns:
+            df['bz_type'] = 'U'
+        else:
+            df['bz_type'] = df['bz_type'].fillna('U')
+
         with self.db_conn.get_connection() as conn:
             count = 0
             for _, row in df.iterrows():
@@ -58,8 +64,8 @@ class FactRevenueSegmentsTable:
                 """), {
                     "ts_code": row.get("ts_code"),
                     "end_date": row.get("end_date"),
-                    "bz_item": row.get("bz_item"),
-                    "bz_type": row.get("bz_type"),
+                    "bz_item": row.get("bz_item") or "未分类",
+                    "bz_type": row.get("bz_type") or "U",
                     "bz_sales": row.get("bz_sales"),
                     "bz_profit": row.get("bz_profit"),
                     "bz_cost": row.get("bz_cost"),

@@ -32,6 +32,7 @@ class FactFinancialReportsTable:
                     total_liab REAL,
                     revenue REAL,
                     net_profit REAL,
+                    deduct_profit REAL,
                     kcfjce REAL,
                     ncf_from_oa REAL,
                     roe REAL,
@@ -45,6 +46,13 @@ class FactFinancialReportsTable:
                     UNIQUE(ts_code, end_date)
                 )
             """))
+            # 自动迁移：添加扣非净利润字段（兼容旧数据库）
+            try:
+                conn.execute(text("ALTER TABLE fact_financial_reports ADD COLUMN deduct_profit REAL"))
+                conn.commit()
+            except Exception:
+                # 字段已存在则忽略
+                pass
             # 添加索引以提高查询性能
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fr_ts_code ON fact_financial_reports(ts_code)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS idx_fr_end_date ON fact_financial_reports(end_date)"))
@@ -99,7 +107,8 @@ class FactFinancialReportsTable:
                 # 定义所有可能的列
                 all_columns = [
                     'ann_date', 'report_type', 'money_cap', 'accounts_receiv',
-                    'total_assets', 'total_liab', 'revenue', 'net_profit', 'kcfjce',
+                    'total_assets', 'total_liab', 'revenue', 'net_profit',
+                    'deduct_profit', 'kcfjce',
                     'ncf_from_oa', 'roe', 'roe_waa', 'roe_dt', 'grossprofit_margin',
                     'netprofit_margin', 'debt_to_assets', 'update_flag', 'update_time'
                 ]

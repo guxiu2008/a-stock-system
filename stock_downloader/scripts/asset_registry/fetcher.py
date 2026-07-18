@@ -235,68 +235,60 @@ class DataFetcher:
             print(f"{list_api_name}接口返回字段异常: {list(df_concepts.columns)}")
             return pd.DataFrame()
         
-        # 创建概念代码到名称的映射
-        concept_map = dict(zip(df_concepts['ts_code'], df_concepts['name']))
-        concept_codes = list(concept_map.keys())
-        
         all_data = []
         hit_rate_limit = False
-        batch_size = 10  # 每批10个板块
-        total_count = len(concept_codes)
-        total_batches = (total_count + batch_size - 1) // batch_size
-        success_batches = 0
+        total_count = len(df_concepts)
+        success_count = 0
         
-        print(f"开始获取 {total_count} 个板块的成分股，分 {total_batches} 批...")
+        print(f"开始获取 {total_count} 个板块的成分股...")
         print("-" * 60)
         
-        for batch_idx in range(total_batches):
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, total_count)
-            batch_codes = concept_codes[start_idx:end_idx]
-            ts_code_param = ','.join(batch_codes)
+        for idx, row in df_concepts.iterrows():
+            concept_code = row['ts_code']
+            concept_name = row['name']
             
             # 显示进度
-            progress_pct = ((batch_idx + 1) / total_batches) * 100
+            progress_pct = ((idx + 1) / total_count) * 100
             print(f"\r{' ' * 60}\r", end="")
-            print(f"进度: [{batch_idx + 1}/{total_batches}] {progress_pct:.1f}% | 板块 {start_idx + 1}-{end_idx}", end="", flush=True)
+            print(f"进度: [{idx + 1}/{total_count}] {progress_pct:.1f}% | {concept_name}", end="", flush=True)
             
             try:
-                time.sleep(1)  # API调用间隔1秒，避免触发频率限制
+                time.sleep(0.2)  # API调用间隔0.2秒，每分钟大约300次，避免触发500次限制
                 df_cons = self.pro.query(
                     member_api_name,
-                    ts_code=ts_code_param,
+                    ts_code=concept_code,
                     fields=member_fields
                 )
             except Exception as e:
                 error_msg = str(e)
-                print(f"\n第 {batch_idx + 1} 批获取失败: {error_msg}")
+                print(f"\n获取 {concept_name} 成分股失败: {error_msg}")
                 if self._is_tushare_rate_limit_error(error_msg):
                     hit_rate_limit = True
-                    print(f"{member_api_name} 已触发频率限制，停止继续请求，避免产生大量失败调用")
+                    print(f"{member_api_name} 已触发频率限制，停止继续请求")
                     break
                 continue
             
-            # 处理批量返回的数据
             if not df_cons.empty:
-                df_standard = self._normalize_batch_board_members(df_cons, concept_map)
+                df_standard = self._normalize_board_members(df_cons, concept_code, concept_name)
                 if not df_standard.empty:
                     all_data.append(df_standard)
-                    success_batches += 1
+                    success_count += 1
         
         # 清除进度条
         print(f"\r{' ' * 60}\r", end="")
         print("-" * 60)
         
         if hit_rate_limit:
-            print(f"{list_api_name}成分股同步因频率限制中断，为避免部分数据覆盖历史数据，本次不返回结果")
-            return pd.DataFrame()
+            print(f"{list_api_name}成分股同步因频率限制中断")
+            if not all_data:
+                return pd.DataFrame()
         
         if not all_data:
             print(f"{list_api_name}接口未获取到有效板块成分股")
-            print(f"统计: 成功 {success_batches}/{total_batches} 批")
+            print(f"统计: 成功 {success_count}/{total_count} 个板块")
             return pd.DataFrame()
         
-        print(f"统计: 成功 {success_batches}/{total_batches} 批")
+        print(f"统计: 成功 {success_count}/{total_count} 个板块")
         
         df_result = pd.concat(all_data, ignore_index=True)
         df_result = df_result[df_result['ts_code'].notna() & (df_result['ts_code'] != '')]
